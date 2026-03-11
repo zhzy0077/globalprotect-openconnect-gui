@@ -38,6 +38,7 @@ type App struct {
 	portalLabel  *widget.Label
 
 	// tray menu items kept for enable/disable updates
+	trayMenu       *fyne.Menu
 	trayConnect    *fyne.MenuItem
 	trayDisconnect *fyne.MenuItem
 
@@ -173,10 +174,9 @@ func (a *App) setupTray() {
 		fyne.NewMenuItem("Quit", a.Shutdown),
 	)
 
+	a.trayMenu = menu
 	desk.SetSystemTrayMenu(menu)
 	desk.SetSystemTrayIcon(trayIcon(colorGrey))
-	// keep a reference so Fyne doesn't GC the menu
-	_ = menu
 }
 
 func (a *App) updateTray(s vpn.State) {
@@ -187,6 +187,7 @@ func (a *App) updateTray(s vpn.State) {
 	busy := s == vpn.StateConnecting || s == vpn.StateDisconnecting
 	a.trayConnect.Disabled = s == vpn.StateConnected || busy
 	a.trayDisconnect.Disabled = s == vpn.StateDisconnected || s == vpn.StateAuthFailed || s == vpn.StateError
+	a.trayMenu.Refresh()
 
 	switch s {
 	case vpn.StateConnected:
