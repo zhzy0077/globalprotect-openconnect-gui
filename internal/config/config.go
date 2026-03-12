@@ -51,5 +51,5 @@ func Save(cfg *Config) error {
 }
 
 func defaultConfig() *Config {
-	return &Config{Browser: "default"}
+	return &Config{Browser: "embedded"}
 }

@@ -416,7 +416,7 @@ func (a *App) showSettings() {
 	if a.cfg.Browser != "" {
 		browserSelect.SetSelected(a.cfg.Browser)
 	} else {
-		browserSelect.SetSelected("default")
+		browserSelect.SetSelected("embedded")
 	}
 
 	items := []*widget.FormItem{
