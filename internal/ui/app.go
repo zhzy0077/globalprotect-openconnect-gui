@@ -16,6 +16,7 @@ import (
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	"fyne.io/systray"
 
 	"github.com/nix-codes/gpoc-gui/internal/auth"
 	"github.com/nix-codes/gpoc-gui/internal/config"
@@ -177,6 +178,7 @@ func (a *App) setupTray() {
 	a.trayMenu = menu
 	desk.SetSystemTrayMenu(menu)
 	desk.SetSystemTrayIcon(vpnDisconnectedIcon())
+	systray.SetTooltip("GlobalProtect VPN")
 }
 
 func (a *App) updateTray(s vpn.State) {
