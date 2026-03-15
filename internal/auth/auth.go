@@ -87,6 +87,53 @@ func RunGpauth(ctx context.Context, portal, browser string) (*SamlAuthData, erro
 	return result.Success, nil
 }
 
+// RunGpauthGateway launches `gpauth <gateway> --gateway [--browser [browser]]` for gateway authentication.
+func RunGpauthGateway(ctx context.Context, gateway, browser string) (*SamlAuthData, error) {
+	args := []string{gateway, "--gateway"}
+	switch browser {
+	case "embedded", "":
+		// no --browser flag
+	case "default":
+		args = append(args, "--browser")
+	default:
+		args = append(args, "--browser", browser)
+	}
+
+	cmd := exec.CommandContext(ctx, "gpauth", args...)
+	cmd.Stderr = os.Stderr
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start gpauth: %w", err)
+	}
+
+	var result samlAuthResult
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		if err := json.Unmarshal([]byte(scanner.Text()), &result); err == nil {
+			break
+		}
+	}
+
+	_ = cmd.Wait()
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if result.Success == nil {
+		if result.Failure != nil {
+			return nil, fmt.Errorf("gpauth: %s", *result.Failure)
+		}
+		return nil, fmt.Errorf("gpauth produced no auth data")
+	}
+
+	return result.Success, nil
+}
+
 // ToGpclientJSON returns the JSON line that should be written to openconnect's
 // stdin when using --cookie-on-stdin.
 func (d *SamlAuthData) ToGpclientJSON() (string, error) {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"image/color"
+	"log"
 	"os/exec"
 
 	"fyne.io/fyne/v2"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/nix-codes/gpoc-gui/internal/auth"
 	"github.com/nix-codes/gpoc-gui/internal/config"
+	"github.com/nix-codes/gpoc-gui/internal/credential"
 	"github.com/nix-codes/gpoc-gui/internal/portal"
 	"github.com/nix-codes/gpoc-gui/internal/vpn"
 )
@@ -31,19 +33,16 @@ type App struct {
 	cfg     *config.Config
 	mgr     *vpn.Manager
 
-	// live-update widgets
 	statusDot    *canvas.Circle
 	statusLabel  *widget.Label
 	gatewayLabel *widget.Label
 	connectBtn   *widget.Button
 	portalLabel  *widget.Label
 
-	// tray menu items kept for enable/disable updates
 	trayMenu       *fyne.Menu
 	trayConnect    *fyne.MenuItem
 	trayDisconnect *fyne.MenuItem
 
-	// channel used to route VPN state changes back to the Fyne event loop
 	stateCh chan vpnStateMsg
 
 	authCtx    context.Context
@@ -55,7 +54,6 @@ type vpnStateMsg struct {
 	gateway string
 }
 
-// NewApp constructs the application.  Call Run() to start the event loop.
 func NewApp() *App {
 	a := &App{
 		fyneApp: app.NewWithID("io.github.nix-codes.gpoc-gui"),
@@ -77,15 +75,11 @@ func NewApp() *App {
 	return a
 }
 
-// Shutdown disconnects the VPN and quits the Fyne app.
 func (a *App) Shutdown() {
 	a.mgr.Disconnect()
 	a.fyneApp.Quit()
 }
 
-// Run starts the Fyne event loop (blocks until quit).
-// Fyne v2 is thread-safe for widget updates, so we drive UI changes from
-// a background goroutine that drains the state channel.
 func (a *App) Run() {
 	go func() {
 		for msg := range a.stateCh {
@@ -94,12 +88,8 @@ func (a *App) Run() {
 	}()
 
 	a.fyneApp.Run()
-
-	// App is exiting — disconnect VPN if still connected.
 	a.mgr.Disconnect()
 }
-
-// ---- main window ------------------------------------------------------------
 
 func (a *App) buildWindow() {
 	a.window = a.fyneApp.NewWindow("GlobalProtect-OpenConnect GUI")
@@ -148,8 +138,6 @@ func (a *App) portalDisplay() string {
 	}
 	return "No portal configured"
 }
-
-// ---- system tray ------------------------------------------------------------
 
 func (a *App) setupTray() {
 	desk, ok := a.fyneApp.(desktop.App)
@@ -201,8 +189,6 @@ func (a *App) updateTray(s vpn.State) {
 	}
 }
 
-// ---- state machine ----------------------------------------------------------
-
 func (a *App) applyState(s vpn.State, gateway string) {
 	a.updateTray(s)
 
@@ -241,7 +227,6 @@ func (a *App) applyState(s vpn.State, gateway string) {
 		a.connectBtn.Disable()
 
 	case vpn.StateAuthFailed:
-		// Cache is stale — clear it and kick off a fresh browser auth.
 		a.statusDot.FillColor = colorGrey
 		a.statusLabel.SetText("Re-authenticating…")
 		a.connectBtn.SetText("Connecting…")
@@ -259,8 +244,6 @@ func (a *App) applyState(s vpn.State, gateway string) {
 	a.statusDot.Refresh()
 }
 
-// ---- connect / disconnect actions -------------------------------------------
-
 func (a *App) onConnectPressed() {
 	switch a.mgr.State() {
 	case vpn.StateConnected, vpn.StateConnecting:
@@ -271,8 +254,6 @@ func (a *App) onConnectPressed() {
 	}
 }
 
-// checkSudoRule returns an error if the sudoers NOPASSWD rule for openconnect
-// is not in place. Uses sudo -n -l to avoid any password prompt.
 func checkSudoRule() error {
 	cmd := exec.Command("sudo", "-n", "-l", "/usr/sbin/openconnect")
 	if err := cmd.Run(); err != nil {
@@ -305,7 +286,7 @@ func (a *App) doConnect() {
 	}
 	a.authCtx, a.authCancel = context.WithCancel(context.Background())
 
-	// Attempt seamless reconnect using the cached portal cookie + gateway.
+	// Attempt seamless reconnect using cached credentials.
 	if cached, err := auth.LoadCredentials(); err == nil &&
 		cached.PortalCookieFromConfig != "" && cached.GatewayAddress != "" {
 		go a.tryReconnect(cached)
@@ -316,9 +297,6 @@ func (a *App) doConnect() {
 	go a.connectFresh()
 }
 
-// tryReconnect skips the portal getconfig.esp call entirely and goes straight
-// to the gateway's login.esp using the cached portal cookie.  Falls back to
-// connectFresh on any error.
 func (a *App) tryReconnect(cached *auth.CachedAuth) {
 	token, err := portal.GatewayLogin(
 		cached.GatewayAddress,
@@ -338,8 +316,6 @@ func (a *App) tryReconnect(cached *auth.CachedAuth) {
 	}
 }
 
-// connectFresh runs gpauth to get fresh SAML credentials, then calls the
-// portal and gateway HTTP endpoints before starting the openconnect tunnel.
 func (a *App) connectFresh() {
 	if a.cfg.Portal == "" {
 		return
@@ -379,11 +355,77 @@ func (a *App) connectFresh() {
 		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
 		return
 	}
-	gw := portalCfg.Gateways[0]
 
-	_ = auth.UpdatePortalCookies(portalCfg.PortalUserauthcookie, portalCfg.PrelogonUserauthcookie,
-		gw.Address, gw.Name)
+// If only one gateway, use it directly
+if len(portalCfg.Gateways) == 1 {
+		gw := portalCfg.Gateways[0]
+		a.cfg.Gateway = gw.Address
+		_ = config.Save(a.cfg)
+		a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", gw.Name))
+		a.gatewayLabel.Show()
+a.connectToGateway(gw, portalCfg, authData)
+return
+}
 
+	// Multiple gateways - show selection dialog
+	// If a specific gateway is configured and exists in the list, use it directly
+	if a.cfg.Gateway != "" {
+		for _, g := range portalCfg.Gateways {
+			if g.Address == a.cfg.Gateway {
+				log.Printf("Using configured gateway: %s (address: %s)", g.Name, g.Address)
+				a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", g.Name))
+				a.gatewayLabel.Show()
+				a.connectToGateway(g, portalCfg, authData)
+				return
+			}
+		}
+		log.Printf("Configured gateway %s not found in portal response, showing selection dialog", a.cfg.Gateway)
+	}
+var gwNames []string
+	for _, g := range portalCfg.Gateways {
+		name := g.Name
+		if g.Address != g.Name {
+			name = fmt.Sprintf("%s (%s)", g.Name, g.Address)
+		}
+		gwNames = append(gwNames, name)
+	}
+
+	gwSelect := widget.NewSelect(gwNames, nil)
+	gwSelect.SetSelected(gwNames[0])
+
+	items := []*widget.FormItem{
+		{Text: "Gateway", Widget: gwSelect},
+	}
+
+	d := dialog.NewForm("Select Gateway", "Connect", "Cancel", items, func(ok bool) {
+		if !ok {
+			a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
+			return
+		}
+		idx := 0
+		for i, name := range gwNames {
+			if name == gwSelect.Selected {
+				idx = i
+				break
+			}
+		}
+		gw := portalCfg.Gateways[idx]
+		log.Printf("Selected gateway: %s (address: %s)", gw.Name, gw.Address)
+a.cfg.Gateway = gw.Address
+if err := config.Save(a.cfg); err != nil {
+log.Printf("Failed to save gateway to config: %v", err)
+		} else {
+			log.Printf("Saved gateway to config: %s", a.cfg.Gateway)
+		}
+a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", gw.Name))
+		a.gatewayLabel.Show()
+		a.connectToGateway(gw, portalCfg, authData)
+	}, a.window)
+	d.Resize(fyne.NewSize(360, 160))
+	d.Show()
+}
+
+func (a *App) connectToGateway(gw portal.Gateway, portalCfg *portal.Config, authData *auth.SamlAuthData) {
 	token, err := portal.GatewayLogin(
 		gw.Address,
 		authData.Username,
@@ -391,26 +433,75 @@ func (a *App) connectFresh() {
 		portalCfg.PrelogonUserauthcookie,
 	)
 	if err != nil {
-		dialog.ShowError(fmt.Errorf("Gateway login failed:\n%w", err), a.window)
+		// Retry with fresh auth on any error (matches gpclient behavior)
+		log.Printf("Gateway login with portal cookie failed, retrying with fresh auth: %v", err)
+		token, err = a.freshGatewayAuth(gw.Address)
+	}
+
+ if err != nil {
+ dialog.ShowError(fmt.Errorf("Gateway login failed:\n%w", err), a.window)
 		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
 		return
-	}
+ }
 
-	if err := a.mgr.Connect(gw.Address, token); err != nil {
-		dialog.ShowError(err, a.window)
-		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
-	}
+ _ = auth.UpdatePortalCookies(portalCfg.PortalUserauthcookie, portalCfg.PrelogonUserauthcookie,
+ gw.Address, gw.Name)
+
+ if err := a.mgr.Connect(gw.Address, token); err != nil {
+ dialog.ShowError(err, a.window)
+ a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
+ }
 }
 
-// ---- settings dialog --------------------------------------------------------
+// freshGatewayAuth performs fresh authentication to a gateway (without portal cookie).
+func (a *App) freshGatewayAuth(gateway string) (string, error) {
+	ctx := a.authCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	prelogin, err := portal.PerformPrelogin(gateway, true)
+	if err != nil {
+		return "", fmt.Errorf("gateway prelogin failed: %w", err)
+	}
+
+	var cred credential.Credential
+	switch p := prelogin.(type) {
+	case *portal.SamlPrelogin:
+		authData, err := auth.RunGpauthGateway(ctx, gateway, a.cfg.Browser)
+		if err != nil {
+			return "", fmt.Errorf("gateway auth failed: %w", err)
+		}
+		cred = &credential.PreloginCredential{
+			User:           authData.Username,
+			PreloginCookie: authData.PreloginCookie,
+		}
+	case *portal.StandardPrelogin:
+		return "", fmt.Errorf("password auth not supported, gateway requires: %s", p.AuthMessage)
+	default:
+		return "", fmt.Errorf("unsupported auth type for gateway: %T", prelogin)
+	}
+
+	token, err := portal.GatewayLoginWithCredential(gateway, cred)
+	if err != nil {
+		return "", fmt.Errorf("gateway login failed: %w", err)
+	}
+
+	return token, nil
+}
 
 func (a *App) showSettings() {
 	portalEntry := widget.NewEntry()
 	portalEntry.SetPlaceHolder("vpn.mycompany.io")
 	portalEntry.SetText(a.cfg.Portal)
 
+gatewayEntry := widget.NewEntry()
+	gatewayEntry.SetPlaceHolder("gateway.company.com (optional)")
+	log.Printf("Loading gateway into settings panel: '%s'", a.cfg.Gateway)
+gatewayEntry.SetText(a.cfg.Gateway)
+
 	browserSelect := widget.NewSelect(
-		[]string{"embedded", "default", "firefox", "chrome", "chromium", "remote"},
+		[]string{"embedded", "default", "firefox", "chrome", "chromium", "microsoft-edge-stable", "remote"},
 		nil,
 	)
 	if a.cfg.Browser != "" {
@@ -419,9 +510,14 @@ func (a *App) showSettings() {
 		browserSelect.SetSelected("embedded")
 	}
 
+	asGatewayCheck := widget.NewCheck("Connect as Gateway (skip portal)", nil)
+	asGatewayCheck.SetChecked(a.cfg.AsGateway)
+
 	items := []*widget.FormItem{
-		{Text: "Portal", Widget: portalEntry, HintText: "GlobalProtect portal hostname"},
-		{Text: "Browser", Widget: browserSelect, HintText: "Browser used for SSO login"},
+		{Text: "Portal", Widget: portalEntry, HintText: "GlobalProtect portal or gateway hostname"},
+		{Text: "Gateway", Widget: gatewayEntry, HintText: "Optional: specific gateway to connect"},
+		{Text: "Browser", Widget: browserSelect, HintText: "Browser for SSO login"},
+		{Text: "Mode", Widget: asGatewayCheck, HintText: "Enable if server is a gateway"},
 	}
 
 	d := dialog.NewForm("Settings", "Save", "Cancel", items, func(saved bool) {
@@ -429,20 +525,19 @@ func (a *App) showSettings() {
 			return
 		}
 		a.cfg.Portal = portalEntry.Text
+		a.cfg.Gateway = gatewayEntry.Text
 		a.cfg.Browser = browserSelect.Selected
+		a.cfg.AsGateway = asGatewayCheck.Checked
 		_ = config.Save(a.cfg)
-		auth.ClearCredentials() // portal changed → old credentials are invalid
+		auth.ClearCredentials()
 		a.portalLabel.SetText(a.portalDisplay())
 	}, a.window)
-	d.Resize(fyne.NewSize(360, 200))
+	d.Resize(fyne.NewSize(400, 280))
 	d.Show()
 }
-
-// ---- colours / icons --------------------------------------------------------
 
 var (
 	colorGrey  = color.NRGBA{R: 150, G: 150, B: 150, A: 255}
 	colorAmber = color.NRGBA{R: 255, G: 180, B: 0, A: 255}
 	colorGreen = color.NRGBA{R: 40, G: 180, B: 70, A: 255}
 )
-

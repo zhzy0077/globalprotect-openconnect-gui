@@ -7,8 +7,10 @@ import (
 )
 
 type Config struct {
-	Portal  string `json:"portal"`
-	Browser string `json:"browser"`
+	Portal    string `json:"portal"`
+	Browser   string `json:"browser"`
+	AsGateway bool   `json:"as_gateway"` // Direct gateway mode (skip portal)
+	Gateway   string `json:"gateway"`    // Specific gateway to connect (optional)
 }
 
 func dir() (string, error) {
@@ -51,5 +53,5 @@ func Save(cfg *Config) error {
 }
 
 func defaultConfig() *Config {
-	return &Config{Browser: "embedded"}
+	return &Config{Browser: "embedded", AsGateway: false}
 }
