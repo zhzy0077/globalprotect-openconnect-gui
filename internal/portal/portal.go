@@ -11,10 +11,13 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/nix-codes/gpoc-gui/internal/credential"
 	"github.com/nix-codes/gpoc-gui/internal/errors"
 )
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 const userAgent = "PAN GlobalProtect/6.3.0-33 (Linux)"
 
@@ -67,7 +70,6 @@ func (s *SamlPrelogin) IsGateway() bool     { return s.IsGatewayFlag }
 func (s *SamlPrelogin) Region() string      { return s.PreloginRegion }
 func (s *SamlPrelogin) SAMLRequest() string { return s.PreloginSAMLRequest }
 
-
 // StandardPrelogin represents standard password authentication prelogin result.
 // Mirrors gpclient::Prelogin::Standard
 type StandardPrelogin struct {
@@ -78,11 +80,10 @@ type StandardPrelogin struct {
 	LabelPassword  string
 }
 
-func (s *StandardPrelogin) IsSAML() bool    { return false }
+func (s *StandardPrelogin) IsSAML() bool { return false }
 
 func (s *StandardPrelogin) IsGateway() bool { return s.IsGatewayFlag }
 func (s *StandardPrelogin) Region() string  { return s.PreloginRegion }
-
 
 // Prelogin calls the prelogin.esp endpoint and returns the prelogin type.
 // Mirrors gpclient::prelogin
@@ -117,7 +118,7 @@ func PerformPrelogin(server string, isGateway bool) (Prelogin, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, errors.NewPortalError("prelogin", err)
 	}
@@ -137,37 +138,35 @@ func PerformPrelogin(server string, isGateway bool) (Prelogin, error) {
 
 // parsePreloginResponse parses the prelogin XML response.
 func parsePreloginResponse(body []byte, isGateway bool) (Prelogin, error) {
-	bodyStr := string(body)
+	var doc preloginXML
+	if err := xml.Unmarshal(body, &doc); err != nil {
+		return nil, errors.NewPortalError("prelogin", fmt.Errorf("parse response: %w", err))
+	}
 
-	// Extract status
-	status := extractXMLValue(bodyStr, "status")
-	if status != "" && !strings.EqualFold(status, "SUCCESS") {
-		msg := extractXMLValue(bodyStr, "msg")
+	// Check status
+	if doc.Status != "" && !strings.EqualFold(doc.Status, "SUCCESS") {
+		msg := doc.Msg
 		if msg == "" {
-			msg = status
+			msg = doc.Status
 		}
 		return nil, errors.NewPortalError("prelogin", fmt.Errorf("status: %s", msg))
 	}
 
-
-	region := extractXMLValue(bodyStr, "region")
+	region := doc.Region
 	if region == "" {
 		region = "Unknown"
 	}
 
 	// Check for SAML
-	samlMethod := extractXMLValue(bodyStr, "saml-auth-method")
-	samlRequest := extractXMLValue(bodyStr, "saml-request")
-
-	if samlMethod != "" && samlRequest != "" {
+	if doc.SAMLAuthMethod != "" && doc.SAMLRequest != "" {
 		// Decode base64 SAML request
-		decodedSAML, err := base64.StdEncoding.DecodeString(samlRequest)
+		decodedSAML, err := base64.StdEncoding.DecodeString(doc.SAMLRequest)
 		if err != nil {
 			// If decoding fails, use as-is
-			decodedSAML = []byte(samlRequest)
+			decodedSAML = []byte(doc.SAMLRequest)
 		}
 
-		supportDefaultBrowser := extractXMLValue(bodyStr, "saml-default-browser") == "yes"
+		supportDefaultBrowser := doc.SAMLDefaultBrowser == "yes"
 
 		return &SamlPrelogin{
 			PreloginRegion:        region,
@@ -175,19 +174,18 @@ func parsePreloginResponse(body []byte, isGateway bool) (Prelogin, error) {
 			PreloginSAMLRequest:   string(decodedSAML),
 			SupportDefaultBrowser: supportDefaultBrowser,
 		}, nil
-
 	}
 
 	// Standard prelogin
-	labelUsername := extractXMLValue(bodyStr, "username-label")
+	labelUsername := doc.UsernameLabel
 	if labelUsername == "" {
 		labelUsername = "Username"
 	}
-	labelPassword := extractXMLValue(bodyStr, "password-label")
+	labelPassword := doc.PasswordLabel
 	if labelPassword == "" {
 		labelPassword = "Password"
 	}
-	authMessage := extractXMLValue(bodyStr, "authentication-message")
+	authMessage := doc.AuthenticationMessage
 	if authMessage == "" {
 		authMessage = "Please enter the login credentials"
 	}
@@ -199,32 +197,6 @@ func parsePreloginResponse(body []byte, isGateway bool) (Prelogin, error) {
 		LabelUsername:  labelUsername,
 		LabelPassword:  labelPassword,
 	}, nil
-
-
-}
-
-// extractXMLValue extracts a value from XML by tag name.
-func extractXMLValue(xml, tag string) string {
-	start := strings.Index(xml, "<"+tag+">")
-	if start == -1 {
-		start = strings.Index(xml, "<"+strings.ToUpper(tag)+">")
-	}
-	if start == -1 {
-		return ""
-	}
-	start += len(tag) + 2
-
-	endTag := "</" + tag + ">"
-	end := strings.Index(xml[start:], endTag)
-	if end == -1 {
-		endTag = "</" + strings.ToUpper(tag) + ">"
-		end = strings.Index(xml[start:], endTag)
-	}
-	if end == -1 {
-		return ""
-	}
-
-	return xml[start : start+end]
 }
 
 // GetConfig calls POST https://<portal>/global-protect/getconfig.esp.
@@ -266,7 +238,7 @@ func GetConfig(portal, username, preloginCookie, portalUserauthcookie string) (*
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, errors.NewPortalError("getconfig", err)
 	}
@@ -334,7 +306,7 @@ func GatewayLoginWithCredential(gateway string, cred credential.Credential) (str
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", errors.NewPortalError("gateway_login", err)
 	}
@@ -353,6 +325,20 @@ func GatewayLoginWithCredential(gateway string, cred credential.Credential) (str
 }
 
 // ---- XML parsers ------------------------------------------------------------
+
+// preloginXML mirrors the structure of the prelogin.esp XML response.
+type preloginXML struct {
+	XMLName               xml.Name `xml:"prelogin-response"`
+	Status                string   `xml:"status"`
+	Msg                   string   `xml:"msg"`
+	Region                string   `xml:"region"`
+	SAMLAuthMethod        string   `xml:"saml-auth-method"`
+	SAMLRequest           string   `xml:"saml-request"`
+	SAMLDefaultBrowser    string   `xml:"saml-default-browser"`
+	UsernameLabel         string   `xml:"username-label"`
+	PasswordLabel         string   `xml:"password-label"`
+	AuthenticationMessage string   `xml:"authentication-message"`
+}
 
 // getConfigXML mirrors the structure of the getconfig.esp XML response.
 type getConfigXML struct {

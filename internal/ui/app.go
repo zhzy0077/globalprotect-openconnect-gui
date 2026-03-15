@@ -320,6 +320,13 @@ func (a *App) connectFresh() {
 	if a.cfg.Portal == "" {
 		return
 	}
+
+	// Direct gateway mode: skip portal and connect directly to gateway/portal as gateway
+	if a.cfg.AsGateway {
+		go a.connectDirectGateway()
+		return
+	}
+
 	ctx := a.authCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -356,16 +363,16 @@ func (a *App) connectFresh() {
 		return
 	}
 
-// If only one gateway, use it directly
-if len(portalCfg.Gateways) == 1 {
+	// If only one gateway, use it directly
+	if len(portalCfg.Gateways) == 1 {
 		gw := portalCfg.Gateways[0]
 		a.cfg.Gateway = gw.Address
 		_ = config.Save(a.cfg)
 		a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", gw.Name))
 		a.gatewayLabel.Show()
-a.connectToGateway(gw, portalCfg, authData)
-return
-}
+		a.connectToGateway(gw, portalCfg, authData)
+		return
+	}
 
 	// Multiple gateways - show selection dialog
 	// If a specific gateway is configured and exists in the list, use it directly
@@ -381,7 +388,7 @@ return
 		}
 		log.Printf("Configured gateway %s not found in portal response, showing selection dialog", a.cfg.Gateway)
 	}
-var gwNames []string
+	var gwNames []string
 	for _, g := range portalCfg.Gateways {
 		name := g.Name
 		if g.Address != g.Name {
@@ -402,27 +409,45 @@ var gwNames []string
 			a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
 			return
 		}
-		idx := 0
-		for i, name := range gwNames {
-			if name == gwSelect.Selected {
-				idx = i
-				break
-			}
-		}
-		gw := portalCfg.Gateways[idx]
+		gw := portalCfg.Gateways[gwSelect.SelectedIndex()]
 		log.Printf("Selected gateway: %s (address: %s)", gw.Name, gw.Address)
-a.cfg.Gateway = gw.Address
-if err := config.Save(a.cfg); err != nil {
-log.Printf("Failed to save gateway to config: %v", err)
+		a.cfg.Gateway = gw.Address
+		if err := config.Save(a.cfg); err != nil {
+			log.Printf("Failed to save gateway to config: %v", err)
 		} else {
 			log.Printf("Saved gateway to config: %s", a.cfg.Gateway)
 		}
-a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", gw.Name))
+		a.gatewayLabel.SetText(fmt.Sprintf("Gateway: %s", gw.Name))
 		a.gatewayLabel.Show()
 		a.connectToGateway(gw, portalCfg, authData)
 	}, a.window)
 	d.Resize(fyne.NewSize(360, 160))
 	d.Show()
+}
+
+func (a *App) connectDirectGateway() {
+	ctx := a.authCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// Use configured gateway if available, otherwise use portal address as gateway
+	gateway := a.cfg.Gateway
+	if gateway == "" {
+		gateway = a.cfg.Portal
+	}
+
+	token, err := a.freshGatewayAuth(gateway)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("Gateway authentication failed:\n%w", err), a.window)
+		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
+		return
+	}
+
+	if err := a.mgr.Connect(gateway, token); err != nil {
+		dialog.ShowError(err, a.window)
+		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
+	}
 }
 
 func (a *App) connectToGateway(gw portal.Gateway, portalCfg *portal.Config, authData *auth.SamlAuthData) {
@@ -438,19 +463,19 @@ func (a *App) connectToGateway(gw portal.Gateway, portalCfg *portal.Config, auth
 		token, err = a.freshGatewayAuth(gw.Address)
 	}
 
- if err != nil {
- dialog.ShowError(fmt.Errorf("Gateway login failed:\n%w", err), a.window)
+	if err != nil {
+		dialog.ShowError(fmt.Errorf("Gateway login failed:\n%w", err), a.window)
 		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
 		return
- }
+	}
 
- _ = auth.UpdatePortalCookies(portalCfg.PortalUserauthcookie, portalCfg.PrelogonUserauthcookie,
- gw.Address, gw.Name)
+	_ = auth.UpdatePortalCookies(portalCfg.PortalUserauthcookie, portalCfg.PrelogonUserauthcookie,
+		gw.Address, gw.Name)
 
- if err := a.mgr.Connect(gw.Address, token); err != nil {
- dialog.ShowError(err, a.window)
- a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
- }
+	if err := a.mgr.Connect(gw.Address, token); err != nil {
+		dialog.ShowError(err, a.window)
+		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
+	}
 }
 
 // freshGatewayAuth performs fresh authentication to a gateway (without portal cookie).
@@ -495,10 +520,10 @@ func (a *App) showSettings() {
 	portalEntry.SetPlaceHolder("vpn.mycompany.io")
 	portalEntry.SetText(a.cfg.Portal)
 
-gatewayEntry := widget.NewEntry()
+	gatewayEntry := widget.NewEntry()
 	gatewayEntry.SetPlaceHolder("gateway.company.com (optional)")
 	log.Printf("Loading gateway into settings panel: '%s'", a.cfg.Gateway)
-gatewayEntry.SetText(a.cfg.Gateway)
+	gatewayEntry.SetText(a.cfg.Gateway)
 
 	browserSelect := widget.NewSelect(
 		[]string{"embedded", "default", "firefox", "chrome", "chromium", "microsoft-edge-stable", "remote"},

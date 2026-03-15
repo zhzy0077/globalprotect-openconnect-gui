@@ -69,6 +69,9 @@ func RunGpauth(ctx context.Context, portal, browser string) (*SamlAuthData, erro
 			break
 		}
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read gpauth output: %w", err)
+	}
 
 	// Wait even if we already read the line; ignore exit code because gpauth
 	// sometimes exits non-zero after writing valid JSON.
@@ -117,6 +120,9 @@ func RunGpauthGateway(ctx context.Context, gateway, browser string) (*SamlAuthDa
 		if err := json.Unmarshal([]byte(scanner.Text()), &result); err == nil {
 			break
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("read gpauth output: %w", err)
 	}
 
 	_ = cmd.Wait()

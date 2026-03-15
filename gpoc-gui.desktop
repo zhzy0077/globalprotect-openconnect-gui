@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=GlobalProtect VPN
+Comment=GlobalProtect VPN client with openconnect
+Exec=$HOME/bin/gpoc-gui
+Type=Application
+Terminal=false
+Categories=Network;RemoteAccess;VPN;
+Keywords=VPN;GlobalProtect;OpenConnect;
+Icon=gpoc-gui
