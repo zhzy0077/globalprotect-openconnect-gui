@@ -7,10 +7,9 @@ import (
 )
 
 type Config struct {
-	Portal    string `json:"portal"`
-	Browser   string `json:"browser"`
-	AsGateway bool   `json:"as_gateway"` // Direct gateway mode (skip portal)
-	Gateway   string `json:"gateway"`    // Specific gateway to connect (optional)
+	Portal  string `json:"portal"`
+	Browser string `json:"browser"`
+	Gateway string `json:"gateway"` // Specific gateway to connect (optional)
 }
 
 func dir() (string, error) {

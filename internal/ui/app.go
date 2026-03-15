@@ -321,12 +321,6 @@ func (a *App) connectFresh() {
 		return
 	}
 
-	// Direct gateway mode: skip portal and connect directly to gateway/portal as gateway
-	if a.cfg.AsGateway {
-		go a.connectDirectGateway()
-		return
-	}
-
 	ctx := a.authCtx
 	if ctx == nil {
 		ctx = context.Background()
@@ -425,31 +419,6 @@ func (a *App) connectFresh() {
 	d.Show()
 }
 
-func (a *App) connectDirectGateway() {
-	ctx := a.authCtx
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	// Use configured gateway if available, otherwise use portal address as gateway
-	gateway := a.cfg.Gateway
-	if gateway == "" {
-		gateway = a.cfg.Portal
-	}
-
-	token, err := a.freshGatewayAuth(gateway)
-	if err != nil {
-		dialog.ShowError(fmt.Errorf("Gateway authentication failed:\n%w", err), a.window)
-		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
-		return
-	}
-
-	if err := a.mgr.Connect(gateway, token); err != nil {
-		dialog.ShowError(err, a.window)
-		a.stateCh <- vpnStateMsg{state: vpn.StateDisconnected}
-	}
-}
-
 func (a *App) connectToGateway(gw portal.Gateway, portalCfg *portal.Config, authData *auth.SamlAuthData) {
 	token, err := portal.GatewayLogin(
 		gw.Address,
@@ -535,14 +504,10 @@ func (a *App) showSettings() {
 		browserSelect.SetSelected("embedded")
 	}
 
-	asGatewayCheck := widget.NewCheck("Connect as Gateway (skip portal)", nil)
-	asGatewayCheck.SetChecked(a.cfg.AsGateway)
-
 	items := []*widget.FormItem{
 		{Text: "Portal", Widget: portalEntry, HintText: "GlobalProtect portal or gateway hostname"},
 		{Text: "Gateway", Widget: gatewayEntry, HintText: "Optional: specific gateway to connect"},
 		{Text: "Browser", Widget: browserSelect, HintText: "Browser for SSO login"},
-		{Text: "Mode", Widget: asGatewayCheck, HintText: "Enable if server is a gateway"},
 	}
 
 	d := dialog.NewForm("Settings", "Save", "Cancel", items, func(saved bool) {
@@ -552,7 +517,6 @@ func (a *App) showSettings() {
 		a.cfg.Portal = portalEntry.Text
 		a.cfg.Gateway = gatewayEntry.Text
 		a.cfg.Browser = browserSelect.Selected
-		a.cfg.AsGateway = asGatewayCheck.Checked
 		_ = config.Save(a.cfg)
 		auth.ClearCredentials()
 		a.portalLabel.SetText(a.portalDisplay())
