@@ -10,10 +10,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,12 +31,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
-          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        env:
-          GOARCH: ${{ matrix.arch }}
-          CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
         run: |
           go mod tidy
           go build -o gpoc-gui-linux-${{ matrix.arch}} .
