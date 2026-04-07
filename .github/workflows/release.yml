@@ -9,8 +9,11 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,14 +27,36 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1-mesa-dev xorg-dev libayatana-appindicator3-dev
+          sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Build
-        run: make build
+        env:
+          GOARCH: ${{ matrix.arch }}
+          CC: ${{ matrix.arch == 'arm64' && 'aarch64-linux-gnu-gcc' || 'gcc' }}
+        run: |
+          go mod tidy
+          go build -o gpoc-gui-linux-${{ matrix.arch}} .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpoc-gui-linux-${{ matrix.arch }}
+          path: gpoc-gui-linux-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: gpoc-gui
+          files: artifacts/gpoc-gui-linux-*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
